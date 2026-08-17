@@ -1,0 +1,19 @@
+# dsh-voice-local bundle patch: inserts the dual-face plugin row into the
+# web profile roster. Applied as a profile bundle layer via `dsh.bundle.patch`.
+#
+# The node half (exports ".") runs in the host process and registers
+# /dsh-voice-local/v1/* routes; the client half (exports "./client") is loaded
+# in the web GUI through the `dsh.client` declaration.
+#
+# Optional per-profile overrides (edit the profile's own cordis.patch.yml):
+#   - id: dsh-voice-local
+#     config:
+#       modelUrl: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/...'
+#       mirrorUrl: 'https://your-mirror/...'     # 单个首选镜像
+#       mirrors: ['https://mirror-a/...', 'https://mirror-b/...']  # 按顺序尝试
+#       modelDir: '/absolute/path/to/model'
+#
+# 离线导入：把 model.int8.onnx 与 tokens.txt 放到模型目录即可，插件检测到后不会重复下载。
+- insert:
+    - id: dsh-voice-local
+      name: dsh-voice-local

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tgz
+npm-debug.log*
+coverage/
+.dsh/
+.env
+.env.*

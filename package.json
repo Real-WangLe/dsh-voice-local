@@ -1,0 +1,89 @@
+{
+  "name": "dsh-voice-local",
+  "version": "0.1.0",
+  "description": "DSH WebUI 本地语音输入插件：点击麦克风录音 → 浏览器静音检测断句 → 本地 SenseVoice 离线转写 → 文本追加到输入框草稿（音频不出本机）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "files": [
+    "dist",
+    "lib",
+    "cordis.patch.yml",
+    "scripts",
+    "tools",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/unit/*.test.js test/integration/*.test.js",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
+    "test:e2e": "node --test test/e2e/*.test.js",
+    "doctor": "node scripts/doctor.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "download-model": "node tools/download-model.mjs",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "1.13.5"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-host-webserver": "*"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "voice",
+    "speech-to-text",
+    "sensevoice",
+    "sherpa-onnx",
+    "offline",
+    "privacy",
+    "mic"
+  ],
+  "author": "dsh-voice-local contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Real-WangLe/dsh-voice-local.git"
+  },
+  "homepage": "https://github.com/Real-WangLe/dsh-voice-local#readme",
+  "bugs": {
+    "url": "https://github.com/Real-WangLe/dsh-voice-local/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

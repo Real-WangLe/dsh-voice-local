@@ -1,0 +1,36 @@
+name: Smoke (real model, slow lane)
+
+on:
+  workflow_dispatch:
+    inputs:
+      wav:
+        description: 'Path to a test WAV file inside the repo (required; no default fixture is bundled)'
+        required: true
+      expected:
+        description: 'Optional expected text file path'
+        required: false
+        default: ''
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Download model
+        run: node tools/download-model.mjs
+
+      - name: Run real-model smoke
+        run: node scripts/smoke.mjs "${{ github.event.inputs.wav }}" "${{ github.event.inputs.expected }}"
