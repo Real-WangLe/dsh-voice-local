@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-- Fork from `dsh-voice-input` (fuzhailv, MIT).
+- Adapted in part from the community package `dsh-voice-input` (source attribution in README and LICENSE).
 - Add standard DSH bundle patch (`dsh.bundle.patch`) and plugin id `dsh-voice-local`.
 - Replace ScriptProcessor with AudioWorklet capture.
 - Add browser-side silence detection for sentence-level real-time transcription.

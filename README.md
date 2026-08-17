@@ -104,4 +104,12 @@ node scripts/smoke.mjs <wav> [expected.txt]   # 真实模型慢速冒烟
 
 ## License
 
-MIT，基于 [fuzhailv/dsh-voice-input](https://github.com/lovelycheng/dsh-voice-input)（MIT）改造。
+本项目采用 MIT License。
+
+### 致谢
+
+本项目部分改编自社区插件包 `dsh-voice-input`。参考包元数据标注的来源为 `fuzhailv`，原始实现采用 MIT License。
+
+本项目保留了原始 MIT 许可声明，并对 SenseVoice 转写封装、原生模块诊断、模型管理、宿主路由以及浏览器端录音与断句逻辑进行了改造和扩展。
+
+由于目前无法核验原始参考包的公开仓库地址，本项目不附未经确认的外部链接。
