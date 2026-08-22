@@ -30,8 +30,30 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test e2e
+        run: npm run test:e2e
+
       - name: Pack
         run: npm pack
+
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES="$(awk -v ver="$VERSION" '
+            $0 ~ "^## " ver "( |$)" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md)"
+          if [ -z "$NOTES" ]; then
+            NOTES="Release ${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish to npm
         run: npm publish --access public
@@ -42,3 +64,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dsh-voice-local-*.tgz
+          body: ${{ steps.changelog.outputs.notes }}

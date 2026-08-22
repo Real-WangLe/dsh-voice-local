@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-local",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH WebUI 本地语音输入插件：点击麦克风录音 → 浏览器静音检测断句 → 本地 SenseVoice 离线转写 → 文本追加到输入框草稿（音频不出本机）",
   "type": "module",
   "main": "./dist/index.js",
