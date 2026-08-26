@@ -59,6 +59,16 @@ DSH_VOICE_MIRROR_URL="https://your-mirror/...tar.bz2" node tools/download-model.
 
 agent 通过 ask-user_question 提问时，自定义回答输入区旁会出现同一枚麦克风：说话即插入当前题回答框光标处，不改变已选项、不自动提交；翻页自动跟随。若 DSH 升级后入口消失（锚点变化），插件静默降级不影响卡片本身，可用 `npm run doctor` 查看 `q-anchor` 诊断。
 
+### 噪声过滤（默认开启）
+
+插件内置两级噪声漏斗，环境杂音（风扇、键盘、背景音乐）不再被写成文字：
+
+- **浏览器端自适应门控**：持续跟踪环境噪声底，双门限迟滞判定说话起止；触发前自动回带 250ms 保证句首完整，短促敲击类声音不足最短人声时长直接不上传。
+- **宿主端人声守门**：每段音频上传后先经 GTCRN 神经降噪（可选），再由本地 Silero VAD 判定人声——累计人声不足 400ms 的段直接返回空文本，不会调用识别模型。
+- **文本幻觉兜底**："谢谢观看。"、字幕署名、单字符超长重复等识别残留被规则拦空，正常中英文直通。
+
+两个过滤器模型（Silero VAD ~2.2MB、GTCRN <2MB）与主模型一样**不打包进 npm**，首次使用时自动后台下载。它们是增强组件：缺失或加载失败时自动旁路（fail-open），听写照常可用，`npm run doctor` 与 `/health` 会如实标注状态。
+
 ## 配置
 
 可选环境变量：
@@ -86,6 +96,10 @@ agent 通过 ask-user_question 提问时，自定义回答输入区旁会出现�
         mirrors: ['https://mirror-a/...', 'https://mirror-b/...']  # 按顺序尝试
         modelDir: '/absolute/path/to/model'
         sha256: '<sha256>'
+        # 噪声过滤（均可选，默认即启用）
+        vad: { enabled: true, minSpeechMs: 400 }   # 人声守门；低于门限的段不送识别
+        denoise: { enabled: true }                 # GTCRN 降噪后再识别（含噪环境准确率更高）
+        debug: false                               # true 时 /transcribe 附带 meta 诊断字段
 ```
 
 ## 宿主路由

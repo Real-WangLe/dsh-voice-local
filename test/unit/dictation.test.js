@@ -58,8 +58,11 @@ function makeEnv({ transcribeTexts = ['识别文本'] } = {}) {
   win.URL.createObjectURL = () => 'blob:fake';
   win.URL.revokeObjectURL = () => {};
 
-  /** 推一帧语音 + 若干静音帧以触发断句。 */
+  /** 推一段语音（400ms，满足自适应门控最短人声时长）+ 若干静音帧以触发断句。 */
   function speakSegment() {
+    pushVoice();
+    pushVoice();
+    pushVoice();
     pushVoice();
     for (let i = 0; i < 8; i += 1) node.port.onmessage({ data: new Float32Array(1600).fill(0) });
   }

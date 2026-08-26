@@ -12,6 +12,9 @@
 #       mirrorUrl: 'https://your-mirror/...'     # 单个首选镜像
 #       mirrors: ['https://mirror-a/...', 'https://mirror-b/...']  # 按顺序尝试
 #       modelDir: '/absolute/path/to/model'
+#       vad: { enabled: true, minSpeechMs: 400 }   # Silero VAD 人声守门（累计人声低于门限的段不转写）
+#       denoise: { enabled: true }                 # GTCRN 降噪（关闭后守门仍生效，识别改用原始音频）
+#       debug: false                               # true 时 /transcribe 成功响应附带 meta 诊断字段
 #
 # 离线导入：把 model.int8.onnx 与 tokens.txt 放到模型目录即可，插件检测到后不会重复下载。
 - insert:

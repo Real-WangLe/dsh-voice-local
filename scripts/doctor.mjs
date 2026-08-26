@@ -14,6 +14,8 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { nativeModuleStatus, nativeFixMessage, SHERPA_VERSION } from '../lib/arch.js';
 import { modelDir, modelReady, modelFiles } from '../lib/transcriber.js';
+import { vadModelPath, denoiserModelPath } from '../lib/audio-filter.js';
+import { statSync } from 'node:fs';
 
 const args = new Set(process.argv.slice(2));
 const checkOnly = args.has('--check');
@@ -68,11 +70,23 @@ function checkQuestionAnchor() {
   return { pkg: lastExisting, found: lastExisting === null ? null : false, scanned: 0 };
 }
 
+function filterFileState(path) {
+  try {
+    return statSync(path).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 const status = nativeModuleStatus();
 const model = {
   dir: modelDir(),
   files: modelFiles(),
   ready: await modelReady(),
+};
+const filters = {
+  vad: { path: vadModelPath(), ready: filterFileState(vadModelPath()) },
+  denoiser: { path: denoiserModelPath(), ready: filterFileState(denoiserModelPath()) },
 };
 const anchor = checkQuestionAnchor();
 
@@ -89,6 +103,7 @@ if (!model.ready) {
 if (anchor.found === false) {
   problems.push('宿主前端未找到 data-question-key 锚点：提问卡语音入口将不可用（fail-open，其余功能不受影响）。可能原因：DSH 升级改变了卡片结构');
 }
+// 过滤器模型属于增强组件：缺失只降级（自动旁路 + 后台补下载），不计入故障。
 
 const report = {
   ok: problems.length === 0,
@@ -102,6 +117,11 @@ const report = {
     addonError: status.addonError,
   },
   model: { ready: model.ready, dir: model.dir, files: model.files },
+  filters: {
+    vad: filters.vad,
+    denoiser: filters.denoiser,
+    note: '缺失时守门自动旁路并在首次使用时后台补下载',
+  },
   questionAnchor: anchor,
   problems,
 };
@@ -113,6 +133,7 @@ if (asJson) {
   console.log(`  node:       ${process.version} (${platform()}/${arch()})`);
   console.log(`  sherpa:     ${status.addonLoads ? 'OK' : 'BROKEN'}  wanted=${status.wanted}  resolved=${status.platformResolved}`);
   console.log(`  model:      ${model.ready ? 'OK' : 'NOT READY'}  ${model.dir}`);
+  console.log(`  filters:    vad=${filters.vad.ready ? 'OK' : 'MISSING'}  denoiser=${filters.denoiser.ready ? 'OK' : 'MISSING'}（缺失时自动旁路）`);
   console.log(`  q-anchor:   ${anchor.found === null ? 'UNKNOWN（未找到宿主前端包）' : anchor.found ? 'OK' : 'MISSING'}${anchor.pkg !== null ? `  (${anchor.pkg})` : ''}`);
   if (status.addonError !== null) {
     console.log(`  addon err:  ${status.addonError.split('\n')[0]}`);

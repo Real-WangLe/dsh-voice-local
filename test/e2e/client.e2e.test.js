@@ -244,8 +244,10 @@ test('click starts recording and silence segment appends transcribed text', asyn
     let btn = container.querySelector('button');
     assert.equal(btn.dataset.recording, 'true');
 
-    // 模拟 100ms 语音 + 足够静音触发自动断句
-    fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    // 模拟 500ms 语音（≥ 最短人声门 minSpeechMs=300ms）+ 足够静音触发自动断句
+    for (let i = 0; i < 5; i += 1) {
+      fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    }
     for (let i = 0; i < 8; i += 1) {
       fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0) });
     }
@@ -287,7 +289,10 @@ test('transcription failure shows toast and does not crash', async () => {
   try {
     transcribeError = 'boom';
     await clickButton();
-    fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    // ≥ 最短人声门（300ms）的语音，确保段落会上传并触发失败提示
+    for (let i = 0; i < 5; i += 1) {
+      fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    }
     for (let i = 0; i < 8; i += 1) {
       fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0) });
     }
@@ -426,7 +431,7 @@ test('question card voice write updates field and dispatches bubbling input even
     const injected = await waitFor(() => frame.querySelector('.dsv-local-button') !== null);
     assert.ok(injected, '自定义回答行应注入麦克风按钮');
     await clickElement(frame.querySelector('.dsv-local-button'));
-    fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    for (let i = 0; i < 5; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
     for (let i = 0; i < 8; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0) });
     await flush();
 
@@ -584,8 +589,8 @@ test('question card recording is not stopped by composer takeover watcher (regre
     // 等待超过接管监视器 400ms 间隔，确认不被误停
     await new Promise((resolve) => setTimeout(resolve, 600));
     assert.equal(btn.dataset.recording, 'true', '主 composer 接管自停不得误停问题卡录音');
-    // 说话断句 → 落进问题卡输入框
-    fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    // 说话断句 → 落进问题卡输入框（≥ 最短人声门 300ms）
+    for (let i = 0; i < 5; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
     for (let i = 0; i < 8; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0) });
     await flush();
     assert.equal(ta.value, '问题卡语音');

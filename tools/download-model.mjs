@@ -6,6 +6,7 @@
  *   node tools/download-model.mjs [--url <url>] [--mirror <url>] [--sha256 <hex>]
  *
  * 默认使用内置 GitHub release 地址；下载完成后校验 SHA256（如提供）。
+ * 同时下载 Silero VAD / GTCRN 过滤器小模型（单个失败不影响主模型可用性）。
  */
 import { downloadModel, getDownloadState } from '../lib/model.js';
 import { modelDir } from '../lib/transcriber.js';
@@ -20,6 +21,7 @@ const options = {
   modelUrl: readArg('--url'),
   mirrorUrl: readArg('--mirror'),
   sha256: readArg('--sha256'),
+  filters: true,
 };
 
 console.log(`模型目录: ${modelDir()}`);
@@ -39,6 +41,9 @@ try {
   const result = await promise;
   clearInterval(timer);
   process.stdout.write('\n');
+  if (result?.filters && typeof result.filters === 'object') {
+    console.log('过滤器模型:', JSON.stringify(result.filters));
+  }
   console.log(JSON.stringify(result, null, 2));
 } catch (cause) {
   clearInterval(timer);

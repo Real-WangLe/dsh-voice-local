@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -209,5 +209,79 @@ test('user modelUrl is tried before built-in mirrors', async () => {
     });
     await promise;
     assert.equal(calls[0], 'https://primary.example/model.tar.bz2');
+  });
+});
+
+// ---- 过滤器资产下载（add-voice-noise-filtering）----
+
+test('filters:true 顺序下载三资产且小模型失败被隔离', async () => {
+  await withTempDir(async (dir) => {
+    const voiceDir = join(dir, 'voice');
+    const calls = [];
+    const promise = downloadModel({
+      dir,
+      modelUrl: 'https://primary.example/model.tar.bz2',
+      filters: true,
+      voiceDir,
+      retries: 0,
+      fetchImpl: async (url) => {
+        calls.push(url);
+        if (url === 'https://primary.example/model.tar.bz2') return fakeResponse('data');
+        if (url.endsWith('/silero_vad.onnx')) return fakeResponse('vad-bytes');
+        return fakeResponse('', { ok: false, status: 404, statusText: 'Not Found' }); // gtcrn 全源失败
+      },
+      extractImpl: fakeExtract,
+    });
+    const result = await promise;
+    assert.equal(calls[0], 'https://primary.example/model.tar.bz2'); // 主模型先于过滤器
+    assert.ok(calls.some((u) => u.endsWith('/silero_vad.onnx')));
+    assert.ok(calls.some((u) => u.endsWith('/gtcrn_simple.onnx')));
+    assert.equal(getDownloadState().status, 'ready'); // 小模型失败不置整体 error
+    assert.equal(result.filters.vad.ok, true);
+    assert.equal(result.filters.denoiser.ok, false);
+    const vadStat = await stat(join(voiceDir, 'vad', 'silero_vad.onnx'));
+    assert.ok(vadStat.size > 0);
+  });
+});
+
+test('filters:true 且 SenseVoice 已存在时仅补齐过滤器（老用户升级路径）', async () => {
+  await withTempDir(async (dir) => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'model.int8.onnx'), 'model');
+    await writeFile(join(dir, 'tokens.txt'), 'tokens');
+    const voiceDir = join(dir, 'voice');
+    const calls = [];
+    const result = await downloadModel({
+      dir,
+      filters: true,
+      voiceDir,
+      retries: 0,
+      fetchImpl: async (url) => {
+        calls.push(url);
+        if (url.endsWith('/silero_vad.onnx')) return fakeResponse('vad-bytes');
+        if (url.endsWith('/gtcrn_simple.onnx')) return fakeResponse('gtcrn-bytes');
+        throw new Error(`不应下载主模型：${url}`);
+      },
+      extractImpl: async () => { throw new Error('should not extract'); },
+    });
+    assert.equal(result.already, true);
+    assert.ok(calls.length > 0 && calls.every((u) => u.endsWith('.onnx')), JSON.stringify(calls));
+    assert.equal(result.filters.vad.ok, true);
+    assert.equal(result.filters.denoiser.ok, true);
+  });
+});
+
+test('filters 未开启时不触碰过滤器下载（既有调用方零影响）', async () => {
+  await withTempDir(async (dir) => {
+    const calls = [];
+    const promise = downloadModel({
+      dir,
+      modelUrl: 'https://primary.example/model.tar.bz2',
+      fetchImpl: async (url) => { calls.push(url); return fakeResponse('data'); },
+      extractImpl: fakeExtract,
+    });
+    const result = await promise;
+    assert.equal(result.filters ?? null, null);
+    assert.ok(calls.every((u) => !u.includes('.onnx')));
   });
 });
