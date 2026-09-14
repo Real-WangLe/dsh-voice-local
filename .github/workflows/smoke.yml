@@ -4,12 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       wav:
-        description: 'Path to a test WAV file inside the repo (required; no default fixture is bundled)'
-        required: true
+        description: 'Path to a test WAV file inside the repo (optional; defaults to the bundled regression fixture)'
+        required: false
+        default: 'test/fixtures/voice-zh-16k.wav'
       expected:
         description: 'Optional expected text file path'
         required: false
         default: ''
+  # tag / 发布前自动触发（评审 OV-2）：保持慢速 lane 不拖累每次 PR。
+  # 只挂 tag push：GitHub UI 建 Release 也会创建 tag 并触发本事件；若同时挂
+  # `release: published`，一次发布会跑两遍（每遍要下 ~230MB 模型）。
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   smoke:
@@ -33,4 +40,6 @@ jobs:
         run: node tools/download-model.mjs
 
       - name: Run real-model smoke
-        run: node scripts/smoke.mjs "${{ github.event.inputs.wav }}" "${{ github.event.inputs.expected }}"
+        env:
+          SMOKE_WAV: ${{ github.event.inputs.wav || 'test/fixtures/voice-zh-16k.wav' }}
+        run: node scripts/smoke.mjs "$SMOKE_WAV" "${{ github.event.inputs.expected }}"

@@ -7,8 +7,14 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { createDictationController } from '../../lib/dictation.js';
 
-/** 构造浏览器假环境与控制器。transcribeTexts 按转写调用序依次返回。 */
-function makeEnv({ transcribeTexts = ['识别文本'] } = {}) {
+/** 构造浏览器假环境与控制器。transcribeTexts / transcribeReplies 按转写调用序依次返回。 */
+function makeEnv({
+  transcribeTexts = ['识别文本'],
+  transcribeReplies = null,
+  statusExtra = {},
+  downloadError = null,
+  controllerOptions = {},
+} = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1/' });
   const win = dom.window;
   global.window = win;
@@ -16,18 +22,32 @@ function makeEnv({ transcribeTexts = ['识别文本'] } = {}) {
   Object.defineProperty(global, 'navigator', { value: win.navigator, configurable: true });
 
   let call = 0;
-  const texts = [...transcribeTexts];
+  let downloadCalls = 0;
+  const replies = transcribeReplies !== null
+    ? [...transcribeReplies]
+    : transcribeTexts.map((text) => ({ text }));
   const transcribeCalls = [];
   win.fetch = async (url) => {
     const u = String(url);
     if (u.endsWith('/model/status')) {
-      return { ok: true, status: 200, json: async () => ({ ok: true, ready: true, download: { status: 'ready' } }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, ready: true, download: { status: 'ready' }, ...statusExtra }),
+      };
+    }
+    if (u.endsWith('/model/download')) {
+      downloadCalls += 1;
+      if (downloadError !== null) throw downloadError;
+      return { ok: true, status: 202, json: async () => ({ ok: true, started: true }) };
     }
     if (u.endsWith('/transcribe')) {
-      const text = texts[Math.min(call, texts.length - 1)];
+      const reply = replies[Math.min(call, replies.length - 1)];
       call += 1;
-      transcribeCalls.push(text);
-      return { ok: true, status: 200, json: async () => ({ ok: true, text }) };
+      transcribeCalls.push(reply.text);
+      const body = { ok: true, text: reply.text };
+      if (reply.gateReason !== undefined) body.gateReason = reply.gateReason;
+      return { ok: true, status: 200, json: async () => body };
     }
     throw new Error(`unexpected fetch ${u}`);
   };
@@ -72,7 +92,7 @@ function makeEnv({ transcribeTexts = ['识别文本'] } = {}) {
   }
 
   function target(overrides = {}) {
-    return {
+    const base = {
       id: overrides.id ?? 't',
       live: overrides.live ?? (() => true),
       acceptsWrites: overrides.acceptsWrites ?? (() => true),
@@ -81,16 +101,23 @@ function makeEnv({ transcribeTexts = ['识别文本'] } = {}) {
       compose: overrides.compose ?? ((t) => t),
       write: overrides.write ?? (() => {}),
     };
+    if (overrides.isComposing !== undefined) base.isComposing = overrides.isComposing;
+    return base;
   }
 
-  const controller = createDictationController({ notify: () => {} });
+  const notifications = [];
+  const controller = createDictationController({
+    notify: (message, kind) => notifications.push({ message, kind }),
+    ...controllerOptions,
+  });
 
   async function settle(ms = 30) {
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   return {
-    controller, speakSegment, pushVoice, settle, target, transcribeCalls,
+    controller, speakSegment, pushVoice, settle, target, transcribeCalls, notifications,
+    downloadCalls: () => downloadCalls,
     isRecording: () => controller.getState().mode === 'recording',
     cleanup: () => { controller.dispose(); dom.window.close(); delete global.window; delete global.document; },
     _streamStopped: () => streamStopped,
@@ -195,6 +222,204 @@ test('E2 liveness：目标卸载后队列内写入静默丢弃', async () => {
     alive = false;      // 模拟入口卸载/翻页移除
     await env.settle();
     assert.deepEqual(written, []);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('OV-4 守门判空可见：连续 2 段判空给一次可读提示，同一会话节流', async () => {
+  const env = makeEnv({
+    transcribeReplies: [
+      { text: '', gateReason: 'no-speech' },
+      { text: '', gateReason: 'below-min-speech' },
+      { text: '', gateReason: 'no-speech' },
+    ],
+  });
+  try {
+    const hint = () => env.notifications.filter((n) => /没检测到人声/.test(n.message)).length;
+    await env.controller.start(env.target({ id: 'composer' }));
+    env.speakSegment();
+    await env.settle();
+    assert.equal(hint(), 0, '第 1 段判空不应立即提示');
+    env.speakSegment();
+    await env.settle();
+    assert.equal(hint(), 1, '连续第 2 段判空应给出一次可读提示');
+    env.speakSegment();
+    await env.settle();
+    assert.equal(hint(), 1, '同一会话内节流，只提示一次');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('OV-4 判空计数的连续性：中途有正常结果则重新计数', async () => {
+  const env = makeEnv({
+    transcribeReplies: [
+      { text: '', gateReason: 'no-speech' },
+      { text: '正常一句' },
+      { text: '', gateReason: 'no-speech' },
+    ],
+  });
+  try {
+    const hint = () => env.notifications.filter((n) => /没检测到人声/.test(n.message)).length;
+    await env.controller.start(env.target({ id: 'composer' }));
+    env.speakSegment(); // 判空 → streak 1
+    await env.settle();
+    env.speakSegment(); // 正常 → streak 归零
+    await env.settle();
+    env.speakSegment(); // 判空 → streak 1（未达 2）
+    await env.settle();
+    assert.equal(hint(), 0, '中间出现正常结果后不应累积到 2 段');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('D3c 存量补齐：过滤器资产缺失/0 字节时触发一次补下载，齐备时不触发', async () => {
+  const missing = makeEnv({
+    statusExtra: { filters: { vad: { bytes: 0, ready: false }, denoiser: { bytes: 535638, ready: true } } },
+  });
+  try {
+    await missing.controller.start(missing.target({ id: 'composer' }));
+    await missing.settle();
+    assert.equal(missing.downloadCalls(), 1, '存在 0 字节资产应触发补下载');
+    assert.equal(missing.isRecording(), true, '补下载不得阻塞录音');
+  } finally {
+    missing.cleanup();
+  }
+
+  const complete = makeEnv({
+    statusExtra: { filters: { vad: { bytes: 643854, ready: true }, denoiser: { bytes: 535638, ready: true } } },
+  });
+  try {
+    await complete.controller.start(complete.target({ id: 'composer' }));
+    await complete.settle();
+    assert.equal(complete.downloadCalls(), 0, '资产齐备时不应触发补下载');
+  } finally {
+    complete.cleanup();
+  }
+});
+
+test('D3c 补下载失败不影响录音主链路（fire-and-forget）', async () => {
+  const env = makeEnv({
+    statusExtra: { filters: { vad: { bytes: 0, ready: false }, denoiser: { bytes: 0, ready: false } } },
+    downloadError: new Error('network down'),
+  });
+  try {
+    await env.controller.start(env.target({ id: 'composer' }));
+    await env.settle();
+    assert.equal(env.downloadCalls(), 1);
+    assert.equal(env.isRecording(), true, '补下载抛错不得阻止录音');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('9.3 IME 组合期写入延后到组合结束（有界）', async () => {
+  const env = makeEnv({ transcribeTexts: ['延迟写入'], controllerOptions: { compositionTimeoutMs: 500, compositionPollMs: 10 } });
+  try {
+    let composing = true;
+    const written = [];
+    const ta = env.target({ id: 'q1', isComposing: () => composing, write: (v) => written.push(v) });
+    await env.controller.start(ta);
+    env.speakSegment(); // 段落入队并完成转写
+    await env.settle(40);
+    assert.deepEqual(written, [], '组合期间不得写入');
+    composing = false; // 组合结束
+    await env.settle(80);
+    assert.deepEqual(written, ['延迟写入'], '组合结束后写入该段');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('9.3 组合期超时（上限 1s）则丢弃该段', async () => {
+  const env = makeEnv({ transcribeTexts: ['不该出现'], controllerOptions: { compositionTimeoutMs: 60, compositionPollMs: 10 } });
+  try {
+    const written = [];
+    const ta = env.target({ id: 'q2', isComposing: () => true, write: (v) => written.push(v) });
+    await env.controller.start(ta);
+    env.speakSegment();
+    await env.settle(160);
+    assert.deepEqual(written, [], '组合一直不结束 → 有界延后超时后丢弃');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('9.3 延后期间目标进入不可写的提交事务状态则丢弃', async () => {
+  const env = makeEnv({ transcribeTexts: ['不该出现'], controllerOptions: { compositionTimeoutMs: 500, compositionPollMs: 10 } });
+  try {
+    let composing = true;
+    let writable = true;
+    const written = [];
+    const ta = env.target({
+      id: 'q3',
+      isComposing: () => composing,
+      acceptsWrites: () => writable,
+      write: (v) => written.push(v),
+    });
+    await env.controller.start(ta);
+    env.speakSegment();
+    await env.settle(40);
+    assert.deepEqual(written, []);
+    writable = false; // 提交事务：不可写
+    await env.settle(80);
+    assert.deepEqual(written, [], '延后期间进入提交事务状态应丢弃该段');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('6.1/6.4 resolveTarget 三分支：提问卡 / 主输入框（含无焦点）/ 未知控件返回 null', () => {
+  const env = makeEnv();
+  try {
+    const doc = window.document;
+    const card = doc.createElement('div');
+    card.setAttribute('data-composer-card', '');
+    doc.body.appendChild(card);
+    const composerTarget = env.target({ id: 'composer' });
+    env.controller.registerTarget({ id: 'composer', target: composerTarget, isComposer: true, canStart: () => true });
+
+    const questionTa = doc.createElement('textarea');
+    doc.body.appendChild(questionTa);
+    const questionTarget = env.target({ id: 'question:q1' });
+    env.controller.registerTarget({
+      id: 'question:q1',
+      target: questionTarget,
+      element: () => questionTa,
+      canStart: () => true,
+    });
+
+    // 分支 1：焦点在已注册的提问卡回答框 → 该卡
+    questionTa.focus();
+    assert.equal(env.controller.resolveTarget(), questionTarget);
+
+    // 分支 2a：焦点在主输入框子树内 → 主输入框
+    card.setAttribute('tabindex', '-1');
+    card.focus();
+    assert.equal(env.controller.resolveTarget(), composerTarget);
+
+    // 分支 2b：页面无焦点（activeElement 为 body）→ 主输入框
+    card.blur();
+    assert.equal(doc.activeElement, doc.body);
+    assert.equal(env.controller.resolveTarget(), composerTarget);
+
+    // 分支 3：焦点在未知可编辑控件（设置页搜索框等）→ null，不劫持
+    const other = doc.createElement('input');
+    doc.body.appendChild(other);
+    other.focus();
+    assert.equal(env.controller.resolveTarget(), null);
+
+    // 注销后不再命中（白名单语义）
+    env.controller.unregisterTarget('question:q1');
+    questionTa.focus();
+    assert.equal(env.controller.resolveTarget(), null);
+
+    // canStartTarget 读的是注册项 canStart（可用性判定单一真源）
+    assert.equal(env.controller.canStartTarget(composerTarget), true);
+    env.controller.registerTarget({ id: 'composer', target: composerTarget, isComposer: true, canStart: () => false });
+    assert.equal(env.controller.canStartTarget(composerTarget), false);
   } finally {
     env.cleanup();
   }

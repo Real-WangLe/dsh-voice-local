@@ -269,6 +269,38 @@ test('幻觉兜底在响应链生效：识别残留被拦为空', async () => {
   assert.equal(r.json?.text, '');
 });
 
+test('/health 与 /model/status 暴露过滤器状态字段', async () => {
+  const { ctx, getHandler } = createMockCtx();
+  productionApply(ctx);
+  const h = await call(getHandler(), 'GET', '/dsh-voice-local/v1/health');
+  assert.equal(h.status, 200);
+  assert.ok(h.json?.filters?.vad);
+  assert.ok(['ready', 'missing', 'disabled', 'error'].includes(h.json.filters.vad.state));
+  assert.ok(['ready', 'missing', 'disabled', 'error'].includes(h.json.filters.denoiser.state));
+  const s = await call(getHandler(), 'GET', '/dsh-voice-local/v1/model/status');
+  assert.equal(s.status, 200);
+  assert.ok(s.json?.filters?.vad);
+  assert.equal(typeof s.json?.filters?.denoiser?.ready, 'boolean');
+});
+
+test('/health 暴露守门可观测面：运行计数、最近判定值与按组件的最近错误', async () => {
+  const { ctx, getHandler } = createMockCtx();
+  productionApply(ctx);
+  const h = await call(getHandler(), 'GET', '/dsh-voice-local/v1/health');
+  const vad = h.json?.filters?.vad;
+  const denoiser = h.json?.filters?.denoiser;
+  assert.equal(typeof vad.judgedRuns, 'number');
+  assert.equal(typeof vad.emptyRuns, 'number');
+  assert.equal(typeof vad.runs, 'number');
+  assert.equal(typeof vad.errors, 'number');
+  assert.ok(Array.isArray(vad.recentSpeechMs), '最近判定值应为数组');
+  assert.ok(vad.recentSpeechMs.length <= 10, '最近判定值环形缓冲不超过 10 条');
+  assert.ok('lastError' in vad);
+  assert.equal(typeof denoiser.runs, 'number');
+  assert.equal(typeof denoiser.errors, 'number');
+  assert.ok('lastError' in denoiser);
+});
+
 test('debug meta 契约：开启附加、关闭缺席且 { ok, text } 恒定', async () => {
   const withMeta = createMockCtx();
   productionApply(withMeta.ctx, { config: { debug: true } });
@@ -276,12 +308,54 @@ test('debug meta 契约：开启附加、关闭缺席且 { ok, text } 恒定', a
   assert.equal(ra.json?.meta?.guarded, false);
   assert.equal(ra.json?.meta?.denoised, true);
   assert.equal(ra.json?.meta?.speechMs, 1200);
+  assert.equal(ra.json?.meta?.gateReason, 'speech');
+  assert.equal(ra.json?.meta?.denoiseFailed, false);
 
   const withoutMeta = createMockCtx();
   productionApply(withoutMeta.ctx);
   const rb = await call(withoutMeta.getHandler(), 'POST', '/dsh-voice-local/v1/transcribe', { body: PROD_BODY });
   assert.equal(rb.json?.meta, undefined);
   assert.deepEqual({ ok: rb.json?.ok, text: rb.json?.text }, { ok: true, text: '你好世界' });
+});
+
+test('gateReason 五值：守门短路即使不开 debug 也可见，放行/旁路经 debug meta 可见', async () => {
+  // 1) speech（放行）：非 debug 响应不得多出字段；debug meta 带 gateReason
+  const ok = createMockCtx();
+  productionApply(ok.ctx, { config: { debug: true } });
+  const okRes = await call(ok.getHandler(), 'POST', '/dsh-voice-local/v1/transcribe', { body: PROD_BODY });
+  assert.equal(okRes.json?.meta?.gateReason, 'speech');
+
+  // 2) below-min-speech：无需 debug 开关即可区分
+  const below = createMockCtx();
+  productionApply(below.ctx, {
+    audioFilter: async (s) => ({ speech: false, speechMs: 80, denoised: true, samples: s, bypass: false }),
+  });
+  const belowRes = await call(below.getHandler(), 'POST', '/dsh-voice-local/v1/transcribe', { body: PROD_BODY });
+  assert.equal(belowRes.json?.ok, true);
+  assert.equal(belowRes.json?.text, '');
+  assert.equal(belowRes.json?.gateReason, 'below-min-speech');
+
+  // 3) no-speech：同样无需 debug
+  const none = createMockCtx();
+  productionApply(none.ctx, {
+    audioFilter: async (s) => ({ speech: false, speechMs: 0, denoised: true, samples: s, bypass: false }),
+  });
+  const noneRes = await call(none.getHandler(), 'POST', '/dsh-voice-local/v1/transcribe', { body: PROD_BODY });
+  assert.equal(noneRes.json?.gateReason, 'no-speech');
+
+  // 4) bypass-missing / 5) bypass-error：fail-open 放行，debug meta 标明旁路原因
+  for (const reason of ['bypass-missing', 'bypass-error']) {
+    const bypass = createMockCtx();
+    productionApply(bypass.ctx, {
+      config: { debug: true },
+      audioFilter: async (s) => ({ speech: true, speechMs: null, denoised: false, denoiseFailed: true, samples: s, bypass: true, gateReason: reason }),
+    });
+    const bypassRes = await call(bypass.getHandler(), 'POST', '/dsh-voice-local/v1/transcribe', { body: PROD_BODY });
+    assert.equal(bypassRes.json?.meta?.gateReason, reason);
+    assert.equal(bypassRes.json?.meta?.bypass, true);
+    assert.equal(bypassRes.json?.meta?.denoiseFailed, true);
+    assert.equal(bypassRes.json?.text, '你好世界', '旁路必须 fail-open 照常转写');
+  }
 });
 
 test('配置关闭路径：vad/denoise 关闭时透传开关且照常转写', async () => {

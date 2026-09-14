@@ -9,6 +9,7 @@ import { act } from 'react';
 
 let dom;
 let container;
+let composerCard;
 let root;
 let loadedModule;
 let slotDesc;
@@ -25,6 +26,7 @@ let audioWorkletError = null;
 let modelDownloadError = false;
 let modelDownloadStatus = 'downloading';
 let streamStopped = false;
+let submitCalls = 0;
 const listeners = new Set();
 
 function setSnapshot(next) {
@@ -51,7 +53,7 @@ function jsonResponse(obj, status = 200) {
   };
 }
 
-function setup() {
+function setup({ autoStopOff = false } = {}) {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://127.0.0.1:3080/',
@@ -174,16 +176,33 @@ function setup() {
   const injectProps = slotDesc.inject('session-1');
 
   container = dom.window.document.getElementById('root');
-  root = createRoot(container);
+  // 忠实还原宿主结构：麦克风控件挂在 [data-composer-card] 内（快捷键目标解析/发送手势依赖它）
+  composerCard = dom.window.document.createElement('div');
+  composerCard.setAttribute('data-composer-card', '');
+  container.appendChild(composerCard);
+  if (autoStopOff) dom.window.localStorage.setItem('dsh-voice-local:autoStopOnType', '0');
+  mountComponent();
+}
+
+/** 挂载 MicButton（remount 复用同一 slotComponent）。 */
+function mountComponent() {
+  root = createRoot(composerCard);
   act(() => {
     root.render(React.createElement(slotComponent, {
       inputActions: {
         setDraft: (next) => setSnapshot({ draft: next, phase }),
+        submit: () => { submitCalls += 1; }, // 断言程序化写入从不触发发送（9.2）
       },
       useInput,
-      readDraft: injectProps.readDraft,
+      readDraft: slotDesc.inject('session-1').readDraft,
     }));
   });
+}
+
+/** 卸载后重新挂载（用于验证偏好持久化后重新挂载仍生效）。 */
+function remount() {
+  act(() => root.unmount());
+  mountComponent();
 }
 
 function teardown() {
@@ -194,6 +213,7 @@ function teardown() {
   root = undefined;
   dom = undefined;
   container = undefined;
+  composerCard = undefined;
   slotDesc = undefined;
   slotComponent = undefined;
   fakeNode = undefined;
@@ -208,6 +228,7 @@ function teardown() {
   modelDownloadError = false;
   modelDownloadStatus = 'downloading';
   streamStopped = false;
+  submitCalls = 0;
   listeners.clear();
 }
 
@@ -403,6 +424,30 @@ async function clickElement(el) {
   });
 }
 
+/** 触发文档级快捷键（默认 Ctrl+Alt+V）。 */
+async function pressHotkey(init = {}) {
+  const event = new dom.window.KeyboardEvent('keydown', {
+    key: 'v',
+    code: 'KeyV',
+    ctrlKey: true,
+    altKey: true,
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  await act(async () => {
+    document.dispatchEvent(event);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  return event;
+}
+
+/** 推一段满足最短人声门的语音 + 静音，触发自动断句。 */
+function speakSegment() {
+  for (let i = 0; i < 5; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+  for (let i = 0; i < 8; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0) });
+}
+
 test('question card gets mic injected in both inline and block forms', async () => {
   setup();
   try {
@@ -594,6 +639,294 @@ test('question card recording is not stopped by composer takeover watcher (regre
     for (let i = 0; i < 8; i += 1) fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0) });
     await flush();
     assert.equal(ta.value, '问题卡语音');
+  } finally {
+    teardown();
+  }
+});
+
+// ---------- 快捷键 / 目标解析 / 发送手势 / 插入安全（add-voice-hotkey-and-fix-gating 第 6-9 节） ----------
+
+test('hotkey starts and stops recording exactly like the mic button; programmatic write never submits', async () => {
+  setup();
+  try {
+    transcribeText = '快捷键文本';
+    const started = await pressHotkey();
+    const btn = container.querySelector('button');
+    assert.equal(btn.dataset.recording, 'true', '空闲时按快捷键应开始录音');
+    assert.equal(started.defaultPrevented, true, '目标解析成功时应阻止按键默认行为');
+    speakSegment();
+    await flush();
+    assert.equal(draft, '快捷键文本');
+    assert.equal(submitCalls, 0, '程序化写入不得触发宿主发送/提交手势（9.2）');
+    const stopped = await pressHotkey();
+    assert.equal(btn.dataset.recording, 'false', '录音中按快捷键应停止并冲刷');
+    assert.equal(stopped.defaultPrevented, true);
+  } finally {
+    teardown();
+  }
+});
+
+test('hotkey semantics are identical with the autostop switch on and off (两种模式)', async () => {
+  for (const autoStopOff of [false, true]) {
+    setup({ autoStopOff });
+    try {
+      transcribeText = autoStopOff ? '关闭自停' : '开启自停';
+      await pressHotkey();
+      const btn = container.querySelector('button');
+      assert.equal(btn.dataset.recording, 'true', `autoStopOff=${autoStopOff} 应开始`);
+      speakSegment();
+      await flush();
+      assert.equal(draft, transcribeText, `autoStopOff=${autoStopOff} 应写入`);
+      await pressHotkey();
+      assert.equal(btn.dataset.recording, 'false', `autoStopOff=${autoStopOff} 应停止`);
+    } finally {
+      teardown();
+    }
+  }
+});
+
+test('hotkey resolves target by focus: question card / composer / unknown control', async () => {
+  setup();
+  try {
+    // 1) 页面无焦点 → 主输入框
+    let ev = await pressHotkey();
+    assert.equal(container.querySelector('button').dataset.recording, 'true');
+    assert.equal(ev.defaultPrevented, true);
+    await clickButton(); // 停
+    await flush();
+
+    // 2) 焦点在提问卡回答框 → 录向该卡
+    transcribeText = '录向提问卡';
+    const { frame, ta } = buildQuestionCard('q-hotkey');
+    await waitFor(() => frame.querySelector('.dsv-local-button') !== null);
+    ta.focus();
+    ev = await pressHotkey();
+    assert.equal(ev.defaultPrevented, true);
+    speakSegment();
+    await flush();
+    assert.equal(ta.value, '录向提问卡', '识别文本应插入提问卡回答框');
+    await clickElement(frame.querySelector('.dsv-local-button')); // 停提问卡录音
+    await flush();
+
+    // 3) 焦点在未知可编辑控件（设置页搜索框）→ 不触发、不阻止按键
+    const search = document.createElement('input');
+    document.body.appendChild(search);
+    search.focus();
+    ev = await pressHotkey();
+    assert.equal(ev.defaultPrevented, false, '焦点在其他可编辑控件时不得劫持按键');
+    assert.equal(container.querySelector('button').dataset.recording, 'false');
+  } finally {
+    teardown();
+  }
+});
+
+test('hotkey does not start (no flash) when composer unavailable; the key is passed through', async () => {
+  setup();
+  try {
+    // 1) 提问卡 disabled → 其注册目标不可开始录音（canStart 判定单一真源）。
+    //    注意：本子例必须在 seat 出现之前跑——injector 一旦观测到 seat 就会把
+    //    observer 切到 seat（既有 D6 行为），此后挂在 body 上的卡片不再被观测。
+    const { ta } = buildQuestionCard('q-disabled');
+    ta.disabled = true;
+    await waitFor(() => document.querySelector('[data-question-key="q-disabled"] .dsv-local-button') !== null);
+    const ctrl = window.__dshVoiceLocalDictation__;
+    assert.equal(ctrl.canStartTarget({ id: 'question:q-disabled' }), false, 'disabled 提问卡不可开始录音');
+    assert.equal(ctrl.getState().mode, 'idle');
+
+    // 2) 接管卡片弹出：seat 内出现 [data-question-key] → 不启动、不阻止按键
+    const seat = document.createElement('div');
+    seat.setAttribute('data-composer-seat', '');
+    const takeover = document.createElement('div');
+    takeover.setAttribute('data-question-key', 'takeover');
+    seat.appendChild(takeover);
+    document.body.appendChild(seat);
+    let ev = await pressHotkey();
+    assert.equal(container.querySelector('button').dataset.recording, 'false', '接管卡片时不得启动（防闪一下）');
+    assert.equal(ev.defaultPrevented, false, '不可用时不得阻止按键');
+    seat.remove();
+
+    // 3) 提交事务状态（phase !== plain）→ 同样不启动、不阻止按键
+    await act(async () => { setSnapshot({ phase: 'review' }); await new Promise((resolve) => setTimeout(resolve, 10)); });
+    ev = await pressHotkey();
+    assert.equal(container.querySelector('button').dataset.recording, 'false');
+    assert.equal(ev.defaultPrevented, false);
+    await act(async () => { setSnapshot({ phase: 'plain' }); await new Promise((resolve) => setTimeout(resolve, 10)); });
+  } finally {
+    teardown();
+  }
+});
+
+test('menu hotkey row: rebind, persist, survive remount, clear restores default', async () => {
+  setup();
+  try {
+    await clickElement(container.querySelector('.dsv-local-ellipsis'));
+    let chip = container.querySelector('.dsv-local-hotkey-chip');
+    assert.equal(chip.textContent, 'Ctrl+Alt+V', '默认显示平台键位');
+    await clickElement(chip);
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, '请按下快捷键…');
+
+    await act(async () => {
+      document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'k', ctrlKey: true, altKey: true, bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    chip = container.querySelector('.dsv-local-hotkey-chip');
+    assert.equal(chip.textContent, 'Ctrl+Alt+K', '按键即完成绑定');
+    assert.equal(dom.window.localStorage.getItem('dsh-voice-local:hotkey'), 'Mod+Alt+K', '绑定应持久化');
+
+    remount();
+    await clickElement(container.querySelector('.dsv-local-ellipsis'));
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, 'Ctrl+Alt+K', '重新挂载后菜单显示新键位');
+
+    await clickElement(container.querySelector('.dsv-local-hotkey-clear'));
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, 'Ctrl+Alt+V', '清除恢复默认');
+    assert.equal(dom.window.localStorage.getItem('dsh-voice-local:hotkey'), 'Mod+Alt+V');
+  } finally {
+    teardown();
+  }
+});
+
+test('capture rejects reserved combos and allows conflict combos with a readable hint', async () => {
+  setup();
+  try {
+    await clickElement(container.querySelector('.dsv-local-ellipsis'));
+    await clickElement(container.querySelector('.dsv-local-hotkey-chip'));
+
+    // 浏览器保留键 Ctrl+W → 拒绝并说明
+    await act(async () => {
+      document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'w', ctrlKey: true, bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.match(container.querySelector('.dsv-local-hotkey-hint').textContent, /保留/);
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, '请按下快捷键…', '拒绝后仍处于捕获态');
+
+    // Ctrl+Space 冲突组合 → 允许绑定但提示
+    await act(async () => {
+      document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: ' ', ctrlKey: true, bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, 'Ctrl+Space');
+    assert.match(container.querySelector('.dsv-local-hotkey-hint').textContent, /输入法|操作系统/);
+  } finally {
+    teardown();
+  }
+});
+
+test('capture state consumes the bound combo without toggling recording; Esc only cancels capture', async () => {
+  setup();
+  try {
+    await clickElement(container.querySelector('.dsv-local-ellipsis'));
+    await clickElement(container.querySelector('.dsv-local-hotkey-chip'));
+    // 捕获态按下当前已绑组合
+    await pressHotkey();
+    assert.equal(container.querySelector('button').dataset.recording, 'false', '捕获态不得触发录音');
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, 'Ctrl+Alt+V', '组合被捕获控件消费并完成绑定');
+
+    // 再次进入捕获态按 Esc → 只取消捕获，菜单保持打开
+    await clickElement(container.querySelector('.dsv-local-hotkey-chip'));
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, '请按下快捷键…');
+    await act(async () => {
+      document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.ok(container.querySelector('.dsv-local-menu') !== null, 'Esc 只取消捕获，⋮ 菜单保持打开');
+    assert.equal(container.querySelector('.dsv-local-hotkey-chip').textContent, 'Ctrl+Alt+V');
+    assert.equal(container.querySelector('button').dataset.recording, 'false');
+  } finally {
+    teardown();
+  }
+});
+
+test('Enter send gesture stops recording and discards the tail, regardless of the autostop switch', async () => {
+  for (const autoStopOff of [false, true]) {
+    setup({ autoStopOff });
+    try {
+      transcribeText = '未定稿尾段';
+      await clickButton();
+      const btn = container.querySelector('button');
+      assert.equal(btn.dataset.recording, 'true');
+      fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) }); // 未定稿尾段
+      const card = document.querySelector('[data-composer-card]');
+      await act(async () => {
+        card.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      assert.equal(btn.dataset.recording, 'false', `autoStopOff=${autoStopOff}：回车发送手势应停麦`);
+      await flush();
+      assert.equal(draft, '', '未定稿尾段应被丢弃，不落进发送后新建的空草稿');
+    } finally {
+      teardown();
+    }
+  }
+});
+
+test('Shift+Enter and question-card Enter do not stop recording (regression guard)', async () => {
+  setup();
+  try {
+    await clickButton();
+    const btn = container.querySelector('button');
+    fakeNode.port.onmessage({ data: new Float32Array(1600).fill(0.5) });
+    const card = document.querySelector('[data-composer-card]');
+    await act(async () => {
+      card.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.equal(btn.dataset.recording, 'true', 'Shift+Enter（换行）不得停麦');
+    await clickButton(); // 手动停并冲刷尾段
+    await flush();
+
+    const { frame, ta } = buildQuestionCard('q-enter');
+    await waitFor(() => frame.querySelector('.dsv-local-button') !== null);
+    const qBtn = frame.querySelector('.dsv-local-button');
+    await clickElement(qBtn);
+    assert.equal(qBtn.dataset.recording, 'true');
+    await act(async () => {
+      ta.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    assert.equal(qBtn.dataset.recording, 'true', '提问卡回答框的回车是换行语义，不停录');
+  } finally {
+    teardown();
+  }
+});
+
+test('composer write is deferred while IME composition is active (bounded), then flushed on compositionend', async () => {
+  setup();
+  try {
+    transcribeText = '组合期文本';
+    await clickButton();
+    const card = document.querySelector('[data-composer-card]');
+    await act(async () => {
+      card.dispatchEvent(new dom.window.Event('compositionstart', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    speakSegment();
+    await flush();
+    assert.equal(draft, '', '输入法组合期间写入应延后');
+    await act(async () => {
+      card.dispatchEvent(new dom.window.Event('compositionend', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    assert.equal(draft, '组合期文本', '组合结束后延后的写入应落草稿');
+    assert.equal(submitCalls, 0, '延后写入同样不得触发发送');
+  } finally {
+    teardown();
+  }
+});
+
+test('hotkey stops an in-progress recording regardless of focus (regression)', async () => {
+  setup();
+  try {
+    await clickButton();
+    const btn = container.querySelector('button');
+    assert.equal(btn.dataset.recording, 'true');
+    // 焦点移到与语音无关的控件（设置页搜索框那类）：停止不应依赖焦点
+    const search = document.createElement('input');
+    document.body.appendChild(search);
+    search.focus();
+    assert.equal(document.activeElement, search);
+    const ev = await pressHotkey();
+    assert.equal(btn.dataset.recording, 'false', '录音中按快捷键必须停止，与焦点无关');
+    assert.equal(ev.defaultPrevented, true, '录音中停止也应消费该按键');
   } finally {
     teardown();
   }

@@ -5,7 +5,7 @@
  * Copies the plain-JS host sources from lib/ into dist/, then assembles the
  * browser bundle `dist/client.js` from ordered fragments:
  *
- *   [pure.js, manual-edit.js, dictation.js, question-injector.js, client.js]
+ *   [pure.js, manual-edit.js, hotkey.js, dictation.js, question-injector.js, client.js]
  *
  * Fragment contract (keeps us bundler-free while staying real ESM for Node
  * unit tests):
@@ -30,6 +30,7 @@ const dist = resolve(root, 'dist');
 const CLIENT_FRAGMENTS = [
   'pure.js',
   'manual-edit.js',
+  'hotkey.js',
   'dictation.js',
   'question-injector.js',
   'client.js',
@@ -63,7 +64,7 @@ for (const name of CLIENT_FRAGMENTS) {
 const banner = [
   '/**',
   ' * GENERATED FILE — do not edit.',
-  ' * Assembled by scripts/build.mjs from lib/{pure,manual-edit,dictation,question-injector,client}.js',
+  ' * Assembled by scripts/build.mjs from lib/{pure,manual-edit,hotkey,dictation,question-injector,client}.js',
   ' */',
   '',
 ].join('\n');
