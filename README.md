@@ -18,7 +18,7 @@ DSH 自带插件接口，两种来源任选其一：填进「包名或地址」�
 dsh-voice-local
 ```
 
-也可以钉版本，例如 `dsh-voice-local@0.4.0`。这条走 npm registry，需要包已发布（本插件已发布）。
+也可以钉版本，例如 `dsh-voice-local@0.4.1`（**不加版本号即装最新版**，推荐）。这条走 npm registry，需要包已发布（本插件已发布）。
 
 ### 方式二：GitHub 仓库地址
 
