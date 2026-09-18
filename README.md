@@ -6,13 +6,40 @@ DeepSeek Harness（dsh）Web UI 本地语音输入插件。
 - **引擎**：SenseVoice（sherpa-onnx-node，CPU 推理），支持中文自动标点及中/英/日/韩/粤多语言。
 - **句子级实时**：浏览器端静音检测断句，说一句自动回填一句，可继续说话；识别文本按光标位置插入。
 - **安全**：宿主路由只允许 loopback / trustedHosts 访问，非本机请求返回 403。
-- **可发布**：标准 DSH bundle（`dsh.bundle.patch`），`dsh plugin --profile web add dsh-voice-local` 一行安装。
+- **安装**：标准 DSH bundle（`dsh.bundle.patch`），走 DSH 自带插件接口，支持**包名**与 **GitHub 仓库地址**两种来源，见[安装](#安装)。
 
 ## 安装
 
+DSH 自带插件接口，两种来源任选其一：填进「包名或地址」，点**安装**，装完再点**立即启用**。（入口：Web GUI **侧边栏「插件」页 → 「添加插件」**。）
+
+### 方式一：包名（推荐）
+
+```text
+dsh-voice-local
+```
+
+也可以钉版本，例如 `dsh-voice-local@0.4.0`。这条走 npm registry，需要包已发布（本插件已发布）。
+
+### 方式二：GitHub 仓库地址
+
+```text
+https://github.com/Real-WangLe/dsh-voice-local
+```
+
+想跟进尚未发版的改动时用这条。仓库里**已包含构建产物 `dist/`**，因此安装过程不执行构建、也不需要授权任何安装脚本。
+
+### 生效时机
+
+装完**一般立即生效**——DSH 的 profile 是热插拔的，新增插件会当场加载，不需要重启。若界面没变化，先刷新一下浏览器页面。
+
+只有成功界面出现「**已安装，下次启动后加载。**」时才需要重启 `dsh web`。这种情况出现在**覆盖安装同一个包**时，例如从 `dsh-voice-local` 换成 `dsh-voice-local@0.4.1`、或换个来源重装同名插件——模块已经在进程里，必须重启才能换成新代码。
+
+### 命令行等价写法
+
 ```bash
-dsh plugin --profile web add dsh-voice-local
-# 重启 dsh web 后生效
+dsh plugin --profile web add dsh-voice-local                      # 方式一：包名
+dsh plugin --profile web add github:Real-WangLe/dsh-voice-local   # 方式二：GitHub 仓库
+# 新增安装立即生效；覆盖安装同名包需重启 dsh web
 ```
 
 首次点击麦克风会自动在后台下载 SenseVoice 模型（约 230MB），并显示进度提示；下载完成后即可开始录音。
@@ -142,11 +169,13 @@ node tools/download-model.mjs      # 手动下载模型
 
 ```bash
 npm install
-npm run build        # 复制 lib/ -> dist/
+npm run build        # 构建 dist/：复制 lib/ 并拼接浏览器 bundle dist/client.js
 npm test             # 单元 + 路由集成测试
 npm run test:e2e     # jsdom 浏览器端 e2e（快捷键/目标解析/回车自停/IME 延后）
 node scripts/smoke.mjs [wav] [expected.txt]   # 真实模型慢速冒烟（无参默认用 test/fixtures/voice-zh-16k.wav）
 ```
+
+> **`dist/` 随仓库提交**：官方「GitHub 仓库地址」安装方式直接从 git 取包、不执行构建，产物必须随仓库提供。改完 `lib/` 请运行 `npm run build` 并提交 `dist/`——CI 的 `dist-fresh` 作业会重新构建并校验它与 `lib/` 同步。
 
 慢速真模型 lane 也会在打 `v*` tag / 发布 Release 前由 `.github/workflows/smoke.yml` 自动触发，不拖累每次 PR。
 
