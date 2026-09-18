@@ -1,5 +1,10 @@
 node_modules/
-dist/
+
+# dist/ 必须随仓库提供：官方「添加插件 → GitHub 仓库地址」安装方式直接从
+# git 仓库取包，不会执行任何构建（pnpm 会拦下 git 包的 prepare 脚本）。
+# 一旦重新忽略 dist/，该安装方式就会装出 main 指向不存在文件的坏插件。
+# 改完 lib/ 请运行 `npm run build` 并提交 dist/；CI 的 dist-fresh 作业会校验。
+# dist/
 *.tgz
 npm-debug.log*
 coverage/

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # dist/ 随仓库提交（官方「GitHub 仓库地址」安装方式不执行构建），因此必须
+  # 保证它与 lib/ 同步。构建脚本只用 Node 内置模块，这个作业无需装依赖。
+  dist-fresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check committed dist/ matches lib/
+        run: |
+          npm run build
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            echo "::error::dist/ 与 lib/ 不同步。官方「添加插件 → GitHub 仓库地址」安装方式直接使用仓库里的 dist/、不执行构建，请运行 npm run build 并提交 dist/。"
+            git --no-pager status --short -- dist/
+            exit 1
+          fi
+          echo "dist/ 与 lib/ 一致。"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Unit + integration tests
+        run: npm test
+
+      - name: Browser e2e (jsdom)
+        run: npm run test:e2e

@@ -1,0 +1,3 @@
+# dist/ 是 scripts/build.mjs 的生成物，随仓库提交以便官方「GitHub 仓库地址」
+# 安装方式开箱可用。标记为 generated 让 GitHub 折叠其 diff、不计入语言统计。
+dist/** linguist-generated=true
